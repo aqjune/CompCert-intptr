@@ -501,6 +501,14 @@ Definition do_ef_debug (kind: positive) (text: ident) (targs: list typ)
        (w: world) (vargs: list val) (m: mem) : option (world * trace * val * mem) :=
   Some(w, E0, Vundef, m).
 
+Definition do_ef_realize
+       (w: world) (vargs: list val) (m: mem) : option (world * trace * val * mem) :=
+  match vargs with
+  | Vptr b lo :: nil =>
+      Some (w, E0, Vundef, m)
+  | _ => None
+  end.
+
 Definition do_external (ef: external_function):
        world -> list val -> mem -> option (world * trace * val * mem) :=
   match ef with
@@ -516,6 +524,7 @@ Definition do_external (ef: external_function):
   | EF_annot_val text targ => do_ef_annot_val text targ
   | EF_inline_asm text sg clob => do_inline_assembly text sg ge
   | EF_debug kind text targs => do_ef_debug kind text targs
+  | EF_realize => do_ef_realize
   end.
 
 Lemma do_ef_external_sound:
@@ -568,6 +577,9 @@ Proof with try congruence.
   eapply do_inline_assembly_sound; eauto.
 (* EF_debug *)
   unfold do_ef_debug. mydestr. split; constructor.
+(* EF_realize *)
+  unfold do_ef_realize. destruct vargs... destruct v... destruct vargs...
+  mydestr. split. econstructor. constructor.
 Qed.
 
 Lemma do_ef_external_complete:
@@ -611,6 +623,8 @@ Proof.
 (* EF_inline_asm *)
   eapply do_inline_assembly_complete; eauto.
 (* EF_debug *)
+  inv H. inv H0. reflexivity.
+(* EF_realize *)
   inv H. inv H0. reflexivity.
 Qed.
 

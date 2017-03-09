@@ -1377,6 +1377,56 @@ Proof.
   split. constructor. auto.
 Qed.
 
+(** ** Semantics of block realization (realize) *)
+
+Inductive extcall_realize_sem (ge: Senv.t):
+              list val -> mem -> trace -> val -> mem -> Prop :=
+  | extcall_realize_sem_intro: forall b lo m,
+      extcall_realize_sem ge (Vptr b lo :: nil) m E0 Vundef m. (* nop *)
+
+Lemma extcall_realize_ok:
+  extcall_properties extcall_realize_sem
+                     (mksignature (Tptr :: nil) None cc_default).
+Proof.
+  constructor; intros.
+(* well typed *)
+- inv H. unfold proj_sig_res. simpl. auto.
+(* symbols preserved *)
+- inv H0; econstructor; eauto.
+(* valid block *)
+- inv H. eauto with mem.
+(* perms *)
+- inv H. assumption.
+(* readonly *)
+- inv H. eapply Mem.unchanged_on_refl. 
+(* mem extends *)
+- inv H. exists Vundef, m1'. inv H1. inv H5. inv H3.
+  split. econstructor.
+  split. eauto.
+  split. assumption.
+  apply Mem.unchanged_on_refl.
+(* mem inject *)
+- inv H0. inv H2. inv H6. inv H4.
+  exists f, Vundef, m1'.
+  split. econstructor.
+  split. eauto.
+  split. assumption.
+  split. apply Mem.unchanged_on_refl.
+  split. apply Mem.unchanged_on_refl.
+  split. eauto.
+  red. intros. congruence.
+(* trace length *)
+- inv H; simpl; omega.
+(* receptive *)
+- assert (t1 = t2). inv H; inv H0; auto. subst t2.
+  exists vres1; exists m1; auto.
+(* determ *)
+- inv H.
+  inv H0.
+  split. apply match_traces_E0.
+  eauto.
+Qed.
+
 (** ** Semantics of external functions. *)
 
 (** For functions defined outside the program ([EF_external],
@@ -1423,6 +1473,7 @@ Definition external_call (ef: external_function): extcall_sem :=
   | EF_annot_val txt targ => extcall_annot_val_sem txt targ
   | EF_inline_asm txt sg clb => inline_assembly_sem txt sg
   | EF_debug kind txt targs => extcall_debug_sem
+  | EF_realize           => extcall_realize_sem
   end.
 
 Theorem external_call_spec:
@@ -1442,6 +1493,7 @@ Proof.
   apply extcall_annot_val_ok.
   apply inline_assembly_properties.
   apply extcall_debug_ok.
+  apply extcall_realize_ok.
 Qed.
 
 Definition external_call_well_typed ef := ec_well_typed (external_call_spec ef).
