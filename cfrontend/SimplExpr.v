@@ -191,11 +191,30 @@ Inductive destination : Type :=
   | For_set (sd: set_destination).
 
 Definition dummy_expr := Econst_int Int.zero type_int32s.
+      
+
+Definition append_realize_head (a: expr) (tycast: type) (s: list statement)
+    : list statement :=
+  if is_ptrtoint_cast (typeof a) tycast then 
+    (Sbuiltin None EF_realize (Tcons (typeof a) Tnil) (a :: nil)) :: s
+  else s.
+
+Definition append_realize_tail (a: expr) (tycast: type) (s: list statement)
+    : list statement :=
+  match (typeof a), tycast with
+  | Tpointer _ _, Tint _ _ _ | Tpointer _ _, Tlong _ _ =>
+    s ++ (Sbuiltin None EF_realize (Tcons (typeof a) Tnil) (a :: nil)) :: nil
+  | _, _ => s
+  end.
+
+Definition do_set_one (ty: type) (tycast: type) (a: expr) (tmp: ident) :=
+  append_realize_head a tycast (Sset tmp (Ecast a tycast) :: nil).
 
 Fixpoint do_set (sd: set_destination) (a: expr) : list statement :=
   match sd with
-  | SDbase tycast ty tmp => Sset tmp (Ecast a tycast) :: nil
-  | SDcons tycast ty tmp sd' => Sset tmp (Ecast a tycast) :: do_set sd' (Etempvar tmp ty)
+  | SDbase tycast ty tmp => do_set_one ty tycast a tmp
+  | SDcons tycast ty tmp sd' => 
+      (do_set_one ty tycast a tmp) ++ do_set sd' (Etempvar tmp ty)
   end.
 
 Definition finish (dst: destination) (sl: list statement) (a: expr) :=
@@ -254,7 +273,7 @@ Fixpoint transl_expr (dst: destination) (a: Csyntax.expr) : mon (list statement 
       ret (finish dst (sl1 ++ sl2) (Ebinop op a1 a2 ty))
   | Csyntax.Ecast r1 ty =>
       do (sl1, a1) <- transl_expr For_val r1;
-      ret (finish dst sl1 (Ecast a1 ty))
+      ret (finish dst (append_realize_tail a1 ty sl1) (Ecast a1 ty))
   | Csyntax.Eseqand r1 r2 ty =>
       do (sl1, a1) <- transl_expr For_val r1;
       match dst with
@@ -321,10 +340,12 @@ Fixpoint transl_expr (dst: destination) (a: Csyntax.expr) : mon (list statement 
       | For_val | For_set _ =>
           do t <- gensym ty1;
           ret (finish dst
-                 (sl1 ++ sl2 ++ Sset t (Ecast a2 ty1) :: make_assign a1 (Etempvar t ty1) :: nil)
-                 (Etempvar t ty1))
+               (sl1 ++ sl2 ++ 
+                    (append_realize_head a2 ty1 (Sset t (Ecast a2 ty1) :: nil)) ++ 
+                    make_assign a1 (Etempvar t ty1) :: nil)
+               (Etempvar t ty1))
       | For_effects =>
-          ret (sl1 ++ sl2 ++ make_assign a1 a2 :: nil,
+          ret (sl1 ++ sl2 ++ (append_realize_head a2 ty1 (make_assign a1 a2 :: nil)),
                dummy_expr)
       end
   | Csyntax.Eassignop op l1 r2 tyres ty =>
@@ -337,11 +358,14 @@ Fixpoint transl_expr (dst: destination) (a: Csyntax.expr) : mon (list statement 
           do t <- gensym ty1;
           ret (finish dst
                  (sl1 ++ sl2 ++ sl3 ++
-                  Sset t (Ecast (Ebinop op a3 a2 tyres) ty1) ::
+                  (append_realize_head (Ebinop op a3 a2 tyres) ty1
+                     (Sset t (Ecast (Ebinop op a3 a2 tyres) ty1) :: nil)) ++
                   make_assign a1 (Etempvar t ty1) :: nil)
                  (Etempvar t ty1))
       | For_effects =>
-          ret (sl1 ++ sl2 ++ sl3 ++ make_assign a1 (Ebinop op a3 a2 tyres) :: nil,
+          ret (sl1 ++ sl2 ++ sl3 ++ 
+                   (append_realize_head (Ebinop op a3 a2 tyres) ty1 
+                      (make_assign a1 (Ebinop op a3 a2 tyres) :: nil)),
                dummy_expr)
       end
   | Csyntax.Epostincr id l1 ty =>

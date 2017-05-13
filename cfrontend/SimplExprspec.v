@@ -111,7 +111,7 @@ Inductive tr_expr: temp_env -> destination -> Csyntax.expr -> list statement -> 
   | tr_cast: forall le dst e1 ty sl1 a1 tmp,
       tr_expr le For_val e1 sl1 a1 tmp ->
       tr_expr le dst (Csyntax.Ecast e1 ty)
-                   (sl1 ++ final dst (Ecast a1 ty))
+                   ((append_realize_tail a1 ty sl1) ++ final dst (Ecast a1 ty))
                    (Ecast a1 ty) tmp
   | tr_seqand_val: forall le e1 e2 ty sl1 a1 tmp1 t sl2 a2 tmp2 tmp,
       tr_expr le For_val e1 sl1 a1 tmp1 ->
@@ -201,7 +201,8 @@ Inductive tr_expr: temp_env -> destination -> Csyntax.expr -> list statement -> 
       list_disjoint tmp1 tmp2 ->
       incl tmp1 tmp -> incl tmp2 tmp ->
       tr_expr le For_effects (Csyntax.Eassign e1 e2 ty)
-                      (sl1 ++ sl2 ++ make_assign a1 a2 :: nil)
+                      (sl1 ++ sl2 ++ (append_realize_head a2 (Csyntax.typeof e1)
+                                                          (make_assign a1 a2 :: nil)))
                       any tmp
   | tr_assign_val: forall le dst e1 e2 ty sl1 a1 tmp1 sl2 a2 tmp2 t tmp ty1 ty2,
       tr_expr le For_val e1 sl1 a1 tmp1 ->
@@ -213,7 +214,7 @@ Inductive tr_expr: temp_env -> destination -> Csyntax.expr -> list statement -> 
       ty2 = Csyntax.typeof e2 ->
       tr_expr le dst (Csyntax.Eassign e1 e2 ty)
                    (sl1 ++ sl2 ++
-                    Sset t (Ecast a2 ty1) ::
+                    (append_realize_head a2 ty1 (Sset t (Ecast a2 ty1) :: nil)) ++
                     make_assign a1 (Etempvar t ty1) ::
                     final dst (Etempvar t ty1))
                    (Etempvar t ty1) tmp
@@ -225,7 +226,9 @@ Inductive tr_expr: temp_env -> destination -> Csyntax.expr -> list statement -> 
       list_disjoint tmp1 tmp2 -> list_disjoint tmp1 tmp3 -> list_disjoint tmp2 tmp3 ->
       incl tmp1 tmp -> incl tmp2 tmp -> incl tmp3 tmp ->
       tr_expr le For_effects (Csyntax.Eassignop op e1 e2 tyres ty)
-                      (sl1 ++ sl2 ++ sl3 ++ make_assign a1 (Ebinop op a3 a2 tyres) :: nil)
+                      (sl1 ++ sl2 ++ sl3 ++ 
+                           (append_realize_head (Ebinop op a3 a2 tyres) ty1
+                               (make_assign a1 (Ebinop op a3 a2 tyres) :: nil)))
                       any tmp
   | tr_assignop_val: forall le dst op e1 e2 tyres ty sl1 a1 tmp1 sl2 a2 tmp2 sl3 a3 tmp3 t tmp ty1,
       tr_expr le For_val e1 sl1 a1 tmp1 ->
@@ -237,7 +240,8 @@ Inductive tr_expr: temp_env -> destination -> Csyntax.expr -> list statement -> 
       ty1 = Csyntax.typeof e1 ->
       tr_expr le dst (Csyntax.Eassignop op e1 e2 tyres ty)
                    (sl1 ++ sl2 ++ sl3 ++
-                    Sset t (Ecast (Ebinop op a3 a2 tyres) ty1) ::
+                        (append_realize_head (Ebinop op a3 a2 tyres) ty1
+                            (Sset t (Ecast (Ebinop op a3 a2 tyres) ty1) :: nil)) ++
                     make_assign a1 (Etempvar t ty1) ::
                     final dst (Etempvar t ty1))
                    (Etempvar t ty1) tmp
@@ -809,7 +813,7 @@ Opaque makeif.
   exists (tmp1 ++ tmp2); split.
   intros; apply tr_expr_add_dest. econstructor; eauto with gensym.
   eauto with gensym.
-(* cast *)
+(* cast *) 
   monadInv H0. exploit H; eauto. intros [tmp [A B]]. UseFinish.
   econstructor; split; eauto. intros; apply tr_expr_add_dest. constructor; auto.
 (* seqand *)

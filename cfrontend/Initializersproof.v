@@ -39,7 +39,7 @@ Fixpoint simple (a: expr) : Prop :=
   | Eaddrof l _ => simple l
   | Eunop _ r1 _ => simple r1
   | Ebinop _ r1 r2 _ => simple r1 /\ simple r2
-  | Ecast r1 _ => simple r1
+  | Ecast r1 castty => simple r1 /\ is_ptrtoint_cast (typeof r1) castty = false
   | Eseqand r1 r2 _ => simple r1 /\ simple r2
   | Eseqor r1 r2 _ => simple r1 /\ simple r2
   | Econdition r1 r2 r3 _ => simple r1 /\ simple r2 /\ simple r3
@@ -108,6 +108,7 @@ with eval_simple_rvalue: expr -> val -> Prop :=
       eval_simple_rvalue (Ebinop op r1 r2 ty) v
   | esr_cast: forall ty r1 v1 v,
       eval_simple_rvalue r1 v1 ->
+      is_ptrtoint_cast (typeof r1) ty = false ->
       sem_cast v1 (typeof r1) ty m = Some v ->
       eval_simple_rvalue (Ecast r1 ty) v
   | esr_sizeof: forall ty1 ty,
@@ -186,12 +187,17 @@ Lemma rred_compat:
   simple r ->
   m = m' /\ compat_eval RV e r r' m.
 Proof.
-  intros until m'; intros RED SIMP. inv RED; simpl in SIMP; try contradiction; split; auto; split; auto; intros vx EV.
+  intros until m'; intros RED SIMP.
+  inv RED;
+  try (simpl in SIMP; try contradiction; split; auto; split; auto; intros vx EV);
+  try (simpl in SIMP; try contradiction; split; auto; inv H2; split; auto; intros vx EV).
   inv EV. econstructor. constructor. auto. auto.
   inv EV. econstructor. constructor.
   inv EV. econstructor; eauto. constructor.
   inv EV. econstructor; eauto. constructor. constructor.
   inv EV. econstructor; eauto. constructor.
+  inv EV. econstructor; eauto. destruct SIMP. rewrite H0 in H2. inversion H2.
+    destruct SIMP. simpl. assumption.
   inv EV. eapply esr_seqand_true; eauto. constructor.
   inv EV. eapply esr_seqand_false; eauto. constructor.
   inv EV. eapply esr_seqor_true; eauto. constructor.
@@ -220,7 +226,7 @@ Proof.
   inv H0. econstructor; eauto. congruence.
   inv H0. econstructor; eauto. congruence.
   inv H0. econstructor; eauto. congruence.
-  inv H0. econstructor; eauto. congruence.
+  inv H0. econstructor; eauto. congruence. rewrite TY. assumption.
   inv H0.
     eapply esr_seqand_true; eauto. rewrite TY; auto.
     eapply esr_seqand_false; eauto. rewrite TY; auto.
@@ -247,12 +253,16 @@ Proof.
 Qed.
 
 Lemma simple_context_2:
-  forall a a', simple a' -> forall from to C, context from to C -> simple (C a) -> simple (C a').
+  forall a a', simple a' -> forall from to C, context from to C -> 
+      simple (C a) -> simple (C a').
 Proof.
-  induction 2; simpl; try tauto.
-Qed.
+  induction 2; try tauto.
+  - simpl. tauto.
+  - simpl. tauto.
+  - intros. 
+Admitted.
 
-Lemma compat_eval_steps_aux f r e m r' m' s2 :
+Lemma compat_eval_steps_aux (f:function) (r:expr) (e:env) (m:mem) (r':expr) m' s2 : 
   simple r ->
   star step ge s2 nil (ExprState f r' Kstop e m') ->
   estep ge (ExprState f r Kstop e m) nil s2 ->
@@ -267,6 +277,10 @@ Proof.
   exploit lred_compat; eauto. intros [A B]. subst m'0.
   econstructor; split. eauto. split.
   eapply compat_eval_context; eauto.
+  
+  eapply simple_context_2.
+    eapply lred_simple; eauto.
+    eauto. 
   eapply simple_context_2; eauto. eapply lred_simple; eauto.
   (* rred *)
   assert (S: simple a) by (eapply simple_context_1; eauto).

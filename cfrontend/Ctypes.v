@@ -732,6 +732,12 @@ Definition typ_of_type (t: type) : AST.typ :=
   | Tpointer _ _ | Tarray _ _ _ | Tfunction _ _ _ | Tstruct _ _ | Tunion _ _ => AST.Tptr
   end.
 
+Definition is_ptrtoint_cast (fromty: type) (toty: type) :=
+  match fromty, toty with
+  | Tpointer _ _, Tint _ _ _ | Tpointer _ _, Tlong _ _ => true
+  | _, _ => false
+  end.
+
 Definition opttyp_of_type (t: type) : option AST.typ :=
   if type_eq t Tvoid then None else Some (typ_of_type t).
 

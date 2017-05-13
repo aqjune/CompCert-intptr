@@ -768,8 +768,15 @@ Fixpoint step_expr (k: kind) (a: expr) (m: mem): reducts expr :=
   | RV, Ecast r1 ty =>
       match is_val r1 with
       | Some(v1, ty1) =>
-          do v <- sem_cast v1 ty1 ty m;
-          topred (Rred "red_cast" (Eval v ty) m E0)
+          match (is_ptrtoint_cast ty1 ty) with
+          | true =>
+             (_,t,_,m') <- do_ef_realize w (v1 :: nil) m;
+             v <- sem_cast v1 ty1 ty m';
+             topred (Rred "red_cast" (Eval v ty) m' E0)
+          | false =>
+             v <- sem_cast v1 ty1 ty m;
+             topred (Rred "red_cast" (Eval v ty) m E0)
+          end
       | None =>
           incontext (fun x => Ecast x ty) (step_expr RV r1 m)
       end

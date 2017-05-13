@@ -128,6 +128,12 @@ Inductive alloc_variables: env -> mem ->
       alloc_variables (PTree.set id (b1, ty) e) m1 vars e2 m2 ->
       alloc_variables e m ((id, ty) :: vars) e2 m2.
 
+(** Realization of a memory block. *)
+Inductive realize_block : mem -> block -> mem -> Prop :=
+  | realize_block_intros: forall (m:mem) (b:block),
+      realize_block m b m. (* No change in memory, currently. *)
+
+
 (** Initialization of local variables that are parameters to a function.
   [bind_parameters e m1 params args m2] stores the values [args]
   in the memory blocks corresponding to the variables [params].
@@ -250,8 +256,16 @@ Inductive rred: expr -> mem -> trace -> expr -> mem -> Prop :=
         E0 (Eval v ty) m
   | red_cast: forall ty v1 ty1 m v,
       sem_cast v1 ty1 ty m = Some v ->
+      is_ptrtoint_cast ty1 ty = false ->
       rred (Ecast (Eval v1 ty1) ty) m
         E0 (Eval v ty) m
+  | red_cast_ptrtoint : forall ty v1 ty1 m v b offset m',
+      sem_cast v1 ty1 ty m' = Some v ->
+      is_ptrtoint_cast ty1 ty = true ->
+      v1 = Vptr b offset ->
+      realize_block m b m' ->
+      rred (Ecast (Eval v1 ty1) ty) m
+        E0 (Eval v ty) m'
   | red_seqand_true: forall v1 ty1 r2 ty m,
       bool_val v1 ty1 m = Some true ->
       rred (Eseqand (Eval v1 ty1) r2 ty) m
@@ -705,7 +719,16 @@ Inductive sstep: state -> trace -> state -> Prop :=
   | step_return_1: forall f x k e m,
       sstep (State f (Sreturn (Some x)) k e m)
          E0 (ExprState f x (Kreturn k) e  m)
+  | step_return_2_ptrtoint:  forall f v1 ty k e m v2 b ofs m' m'',
+      is_ptrtoint_cast ty f.(fn_return) = true ->
+      v1 = Vptr b ofs ->
+      realize_block m b m' ->
+      sem_cast v1 ty f.(fn_return) m' = Some v2 ->
+      Mem.free_list m' (blocks_of_env e) = Some m'' ->
+      sstep (ExprState f (Eval v1 ty) (Kreturn k) e m)
+         E0 (Returnstate v2 (call_cont k) m'')
   | step_return_2:  forall f v1 ty k e m v2 m',
+      is_ptrtoint_cast ty f.(fn_return) = false ->
       sem_cast v1 ty f.(fn_return) m = Some v2 ->
       Mem.free_list m (blocks_of_env e) = Some m' ->
       sstep (ExprState f (Eval v1 ty) (Kreturn k) e m)

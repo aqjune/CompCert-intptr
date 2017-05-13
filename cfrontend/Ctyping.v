@@ -1699,7 +1699,8 @@ Proof.
 - (* unop *) simpl in H4. inv H2. constructor. eapply pres_sem_unop; eauto.
 - (* binop *)
   simpl in H6. inv H3. inv H5. constructor. eapply pres_sem_binop; eauto.
-- (* cast *) inv H2. constructor. eapply pres_sem_cast; eauto.
+- (* cast *) inv H2. constructor. simpl in *. eapply pres_sem_cast. inversion H3. apply H2. apply H.
+- (* cast, ptrtoint *) inv H4. simpl in *. constructor. eapply pres_sem_cast. inversion H5. apply H3. apply H.
 - (* sequand true *) subst. constructor. auto. apply wt_bool_cast; auto.
   red; intros. inv H0; auto with ty.
 - (* sequand false *) constructor. auto with ty.
@@ -2111,6 +2112,8 @@ Proof.
 - inv WTK; eauto with ty.
 - econstructor. eapply call_cont_wt; eauto. constructor.
 - inv WTS. eauto with ty.
+- inv WTK. econstructor. eapply call_cont_wt; eauto.
+  inv WTE. eapply pres_sem_cast; eauto.
 - inv WTK. econstructor. eapply call_cont_wt; eauto.
   inv WTE. eapply pres_sem_cast; eauto.
 - econstructor. eapply is_wt_call_cont; eauto. constructor.

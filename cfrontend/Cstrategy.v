@@ -56,7 +56,7 @@ Fixpoint simple (a: expr) : bool :=
   | Eaddrof l _ => simple l
   | Eunop _ r1 _ => simple r1
   | Ebinop _ r1 r2 _ => simple r1 && simple r2
-  | Ecast r1 _ => simple r1
+  | Ecast r1 ty => simple r1 && negb (is_ptrtoint_cast (typeof r1) ty)
   | Eseqand _ _ _ => false
   | Eseqor _ _ _ => false
   | Econdition _ _ _ _ => false
@@ -130,6 +130,7 @@ with eval_simple_rvalue: expr -> val -> Prop :=
       eval_simple_rvalue (Ebinop op r1 r2 ty) v
   | esr_cast: forall ty r1 v1 v,
       eval_simple_rvalue r1 v1 ->
+      is_ptrtoint_cast (typeof r1) ty = false ->
       sem_cast v1 (typeof r1) ty m = Some v ->
       eval_simple_rvalue (Ecast r1 ty) v
   | esr_sizeof: forall ty1 ty,
@@ -233,10 +234,21 @@ Inductive estep: state -> trace -> state -> Prop :=
 
   | step_expr: forall f r k e m v ty,
       eval_simple_rvalue e m r v ->
-      match r with Eval _ _ => False | _ => True end ->
+      match r with 
+        | Eval _ _ => False
+        | _ => True end ->
       ty = typeof r ->
       estep (ExprState f r k e m)
          E0 (ExprState f (Eval v ty) k e m)
+
+  | step_cast_ptrtoint: forall f C r1 k e m b ofs v2 ty2 m', 
+      leftcontext RV RV C ->
+      eval_simple_rvalue e m r1 (Vptr b ofs) ->
+      is_ptrtoint_cast (typeof r1) ty2 = true ->
+      realize_block m b m' ->
+      sem_cast (Vptr b ofs) (typeof r1) ty2 m' = Some v2 ->
+      estep (ExprState f (C (Ecast r1 ty2)) k e m)
+         E0 (ExprState f (C (Eval v2 ty2)) k e m')
 
   | step_rvalof_volatile: forall f C l ty k e m b ofs t v,
       leftcontext RV RV C ->
@@ -540,7 +552,11 @@ Definition invert_expr_prop (a: expr) (m: mem) : Prop :=
   | Ebinop op (Eval v1 ty1) (Eval v2 ty2) ty =>
       exists v, sem_binary_operation ge op v1 ty1 v2 ty2 m = Some v
   | Ecast (Eval v1 ty1) ty =>
-      exists v, sem_cast v1 ty1 ty m = Some v
+      exists v,
+      match is_ptrtoint_cast ty1 ty with
+      | true => exists m' b ofs, v1 = Vptr b ofs /\ realize_block m b m' /\ sem_cast v1 ty1 ty m' = Some v
+      | false => sem_cast v1 ty1 ty m = Some v
+      end
   | Eseqand (Eval v1 ty1) r2 ty =>
       exists b, bool_val v1 ty1 m = Some b
   | Eseqor (Eval v1 ty1) r2 ty =>
@@ -595,7 +611,8 @@ Proof.
   split; auto; exists t; exists v; auto.
   exists v; auto.
   exists v; auto.
-  exists v; auto.
+  exists v. destruct (is_ptrtoint_cast ty1 ty). inversion H0. assumption.
+  exists v. destruct (is_ptrtoint_cast ty1 ty). exists m'. exists b. exists offset. split. auto. split. auto. auto. inversion H0.
   exists true; auto. exists false; auto.
   exists true; auto. exists false; auto.
   exists b; auto.
@@ -844,9 +861,12 @@ Ltac StepR REC C' a :=
   StepR IHa2 (fun x => C(Ebinop op (Eval v (typeof a1)) x ty)) a2.
   exploit safe_inv. eexact SAFE1. eauto. simpl. intros [v' EQ].
   exists v'; econstructor; eauto.
-(* cast *)
+(* cast *) 
+  apply andb_true_iff in S.
+  inv S. apply negb_true_iff in H0.
   StepR IHa (fun x => C(Ecast x ty)) a.
-  exploit safe_inv. eexact SAFE0. eauto. simpl. intros [v' CAST].
+  exploit safe_inv. eexact SAFE0. eauto. simpl.
+  rewrite H0. intros [v' CAST].
   exists v'; econstructor; eauto.
 (* sizeof *)
   econstructor; econstructor.
@@ -1043,6 +1063,7 @@ Definition simple_side_effect (r: expr) : Prop :=
   | Ecall r1 rl _ => simple r1 = true /\ simplelist rl = true
   | Ebuiltin ef tyargs rl _ => simplelist rl = true
   | Eparen r1 _ _ => simple r1 = true
+  | Ecast r1 ty => simple r1 = true /\ is_ptrtoint_cast (typeof r1) ty = true
   | _ => False
   end.
 
@@ -1090,6 +1111,8 @@ Ltac Base :=
   Rec H0 RV C (fun x => Ebinop op r1 x ty).
 (* cast *)
   Kind. Rec H RV C (fun x => Ecast x ty).
+  destruct (is_ptrtoint_cast (typeof r) ty) eqn:?.
+  Base. simpl. rewrite andb_true_iff. auto.
 (* seqand *)
   Kind. Rec H RV C (fun x => Eseqand x r2 ty). Base.
 (* seqor *)
@@ -1150,6 +1173,14 @@ Proof.
   exploit eval_simple_rvalue_steps; eauto. simpl; intros STEPS.
   exploit star_inv; eauto. intros [[EQ1 EQ2] | A]; eauto.
   inversion EQ1. rewrite <- H2 in H1; contradiction.
+(* cast ptrtoint *)
+  eapply plus_right.
+  eapply eval_simple_rvalue_steps with (C := fun x => C(Ecast x ty2)); eauto.
+  left. apply step_rred.
+  eapply red_cast_ptrtoint.
+    assumption. assumption. reflexivity. assumption. 
+  apply leftcontext_context in H0. assumption.
+  eauto.
 (* valof volatile *)
   eapply plus_right.
   eapply eval_simple_lvalue_steps with (C := fun x => C(Evalof x (typeof l))); eauto.
@@ -1290,10 +1321,19 @@ Proof.
   clear H0. subst a. red in Q. destruct b; try contradiction.
 (* valof volatile *)
   destruct Q.
-  exploit (simple_can_eval_lval f k e m b (fun x => C(Evalof x ty))); eauto.
+  exploit (simple_can_eval_lval f k e m b (fun x => C(Evalof x ty))). eauto. eauto. eauto.
   intros [b1 [ofs [E1 S1]]].
   exploit safe_inv. eexact S1. eauto. simpl. intros [A [t [v B]]].
   econstructor; econstructor; eapply step_rvalof_volatile; eauto. congruence.
+(* cast of pointer to integer *)
+  exists E0. inv Q.
+  exploit (simple_can_eval_rval f k e m b (fun x => C(Ecast x ty))); eauto.
+    intros [b1 [Ha Hb]]. exploit safe_inv.
+      eexact Hb.
+      eauto.
+      simpl. rewrite H1. intros [v [m' [b0 [ofs H']]]].
+      inversion H'. inversion H3. rewrite -> H2 in *.
+      econstructor. eapply step_cast_ptrtoint; eauto. 
 (* seqand *)
   exploit (simple_can_eval_rval f k e m b1 (fun x => C(Eseqand x b2 ty))); eauto.
   intros [v1 [E1 S1]].
@@ -1641,11 +1681,18 @@ Definition outcome_switch (out: outcome) : outcome :=
   | o => o
   end.
 
-Definition outcome_result_value (out: outcome) (t: type) (v: val) (m: mem) : Prop :=
+Definition outcome_result_value (out: outcome) (t: type) (v: val) (m: mem) (m': mem) : Prop :=
   match out, t with
-  | Out_normal, Tvoid => v = Vundef
-  | Out_return None, Tvoid => v = Vundef
-  | Out_return (Some (v', ty')), ty => ty <> Tvoid /\ sem_cast v' ty' ty m = Some v
+  | Out_normal, Tvoid => v = Vundef /\ m = m'
+  | Out_return None, Tvoid => v = Vundef /\ m = m'
+  | Out_return (Some (v', ty')), ty => 
+    ty <> Tvoid /\
+    ((exists b ofs,
+        is_ptrtoint_cast ty' ty = true /\
+        v' = Vptr b ofs /\
+        realize_block m b m' /\
+        sem_cast v' ty' ty m' = Some v) \/
+     (is_ptrtoint_cast ty' ty = false /\ sem_cast v' ty' ty m = Some v /\ m = m'))
   | _, _ => False
   end.
 
@@ -1692,7 +1739,16 @@ with eval_expr: env -> mem -> kind -> expr -> trace -> mem -> expr -> Prop :=
       eval_expr e m RV (Ebinop op a1 a2 ty) (t1 ** t2) m'' (Ebinop op a1' a2' ty)
   | eval_cast: forall e m a t m' a' ty,
       eval_expr e m RV a t m' a' ->
+      is_ptrtoint_cast (typeof a') ty = false ->
       eval_expr e m RV (Ecast a ty) t m' (Ecast a' ty)
+  | eval_cast_ptrtoint: forall e m a t m' a' v v' b ofs ty m'',
+      eval_expr e m RV a t m' a' ->
+      eval_simple_rvalue ge e m' a' v ->
+      is_ptrtoint_cast (typeof a') ty = true ->
+      v = Vptr b ofs ->
+      realize_block m' b m'' ->
+      sem_cast v (typeof a') ty m'' = Some v' ->
+      eval_expr e m RV (Ecast a ty) t m'' (Eval v' ty)
   | eval_seqand_true: forall e m a1 a2 ty t1 m' a1' v1 t2 m'' a2' v2 v,
       eval_expr e m RV a1 t1 m' a1' -> eval_simple_rvalue ge e m' a1' v1 ->
       bool_val v1 (typeof a1) m' = Some true ->
@@ -1896,14 +1952,15 @@ with exec_stmt: env -> mem -> statement -> trace -> mem -> outcome -> Prop :=
   by the call.  *)
 
 with eval_funcall: mem -> fundef -> list val -> trace -> mem -> val -> Prop :=
-  | eval_funcall_internal: forall m f vargs t e m1 m2 m3 out vres m4,
+  | eval_funcall_internal: forall m f vargs t e m1 m2 m3 out vres m4 m5,
       list_norepet (var_names f.(fn_params) ++ var_names f.(fn_vars)) ->
       alloc_variables ge empty_env m (f.(fn_params) ++ f.(fn_vars)) e m1 ->
       bind_parameters ge e m1 f.(fn_params) vargs m2 ->
       exec_stmt e m2 f.(fn_body) t m3 out ->
-      outcome_result_value out f.(fn_return) vres m3 ->
-      Mem.free_list m3 (blocks_of_env ge e) = Some m4 ->
-      eval_funcall m (Internal f) vargs t m4 vres
+      
+      outcome_result_value out f.(fn_return) vres m3 m4 ->
+      Mem.free_list m4 (blocks_of_env ge e) = Some m5 ->
+      eval_funcall m (Internal f) vargs t m5 vres
   | eval_funcall_external: forall m ef targs tres cconv vargs t vres m',
       external_call ef ge vargs m t vres m' ->
       eval_funcall m (External ef targs tres cconv) vargs t m' vres.
@@ -2253,10 +2310,16 @@ Proof.
   exploit (H2 (fun x => C(Ebinop op a1' x ty))).
     eapply leftcontext_compose; eauto. repeat constructor. auto. intros [E [F G]].
   simpl; intuition. eapply star_trans; eauto.
-(* cast *)
+(* cast *) 
   exploit (H0 (fun x => C(Ecast x ty))).
     eapply leftcontext_compose; eauto. repeat constructor. intros [A [B D]].
-  simpl; intuition; eauto.
+  simpl; intuition; eauto. rewrite andb_true_iff. rewrite H1. eauto.
+(* cast - ptrtoint *)
+  exploit (H0 (fun x => C(Ecast x ty))).
+    eapply leftcontext_compose; eauto. repeat constructor. intros [A [B D]].
+  simpl; intuition.
+  eapply star_right. eexact D. subst v. left. eapply step_cast_ptrtoint; eauto.
+  rewrite E0_right. reflexivity.
 (* seqand true *)
   exploit (H0 (fun x => C(Eseqand x a2 ty))).
     eapply leftcontext_compose; eauto. repeat constructor. intros [A [B D]].
@@ -2595,19 +2658,31 @@ Proof.
   eapply star_left. right; eapply step_internal_function; eauto.
   eapply star_right. eexact A1.
   inv B1; simpl in H4; try contradiction.
+  {
   (* Out_normal *)
   assert (fn_return f = Tvoid /\ vres = Vundef).
-    destruct (fn_return f); auto || contradiction.
-  destruct H7 as [P Q]. subst vres. right; eapply step_skip_call; eauto.
+    destruct (fn_return f); destruct H4; auto || contradiction.
+  destruct H7 as [P Q]. subst vres. 
+  right. eapply step_skip_call. eauto. rewrite P in H4. destruct H4. subst m3. eauto.
+  }
+  {
   (* Out_return None *)
   assert (fn_return f = Tvoid /\ vres = Vundef).
-    destruct (fn_return f); auto || contradiction.
+    destruct (fn_return f); destruct H4 ; auto || contradiction.
   destruct H8 as [P Q]. subst vres.
   rewrite <- (is_call_cont_call_cont k H6). rewrite <- H7.
-  right; apply step_return_0; auto.
+  right. apply step_return_0. rewrite P in H4. destruct H4. subst m3. auto.
+  }
+  {
   (* Out_return Some *)
   destruct H4. rewrite <- (is_call_cont_call_cont k H6). rewrite <- H7.
-  right; eapply step_return_2; eauto.
+  destruct (is_ptrtoint_cast ty (fn_return f)) eqn:?.
+    right. inv H8. inv H9. inv H8. inv H9. inv H10. inv H11.
+      eapply step_return_2_ptrtoint ; eauto.
+      inv H9. inv H8.
+    right. inv H8. inv H9. inv H8. inv H9. inv H8. inv H9. inv H10.
+      eapply step_return_2; eauto.
+  }
   reflexivity. traceEq.
 
 (* call external *)
