@@ -684,6 +684,10 @@ Notation "'do' X , Y , Z <- A ; B" := (match A with Some (X, Y, Z) => B | None =
   (at level 200, X ident, Y ident, Z ident, A at level 100, B at level 200)
   : reducts_monad_scope.
 
+Notation "'do' X , Y , Z , W <- A ; B" := (match A with Some (X, Y, Z, W) => B | None => stuck end)
+  (at level 200, X ident, Y ident, Z ident, A at level 100, B at level 200)
+  : reducts_monad_scope.
+
 Notation " 'check' A ; B" := (if A then B else stuck)
   (at level 200, A at level 100, B at level 200)
   : reducts_monad_scope.
@@ -770,11 +774,11 @@ Fixpoint step_expr (k: kind) (a: expr) (m: mem): reducts expr :=
       | Some(v1, ty1) =>
           match (is_ptrtoint_cast ty1 ty) with
           | true =>
-             (_,t,_,m') <- do_ef_realize w (v1 :: nil) m;
-             v <- sem_cast v1 ty1 ty m';
+             do _,t,_,m' <- do_ef_realize w (v1 :: nil) m;
+             do v <- sem_cast v1 ty1 ty m';
              topred (Rred "red_cast" (Eval v ty) m' E0)
           | false =>
-             v <- sem_cast v1 ty1 ty m;
+             do v <- sem_cast v1 ty1 ty m;
              topred (Rred "red_cast" (Eval v ty) m E0)
           end
       | None =>
