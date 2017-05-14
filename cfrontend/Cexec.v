@@ -36,6 +36,10 @@ Notation "'do' X , Y , Z <- A ; B" := (match A with Some (X, Y, Z) => B | None =
   (at level 200, X ident, Y ident, Z ident, A at level 100, B at level 200)
   : option_monad_scope.
 
+Notation "'do' X , Y , Z , W <- A ; B" := (match A with Some (X, Y, Z, W) => B | None => None end)
+  (at level 200, X ident, Y ident, Z ident, W ident, A at level 100, B at level 200)
+  : option_monad_scope.
+
 Notation " 'check' A ; B" := (if A then B else None)
   (at level 200, A at level 100, B at level 200)
   : option_monad_scope.
@@ -641,11 +645,21 @@ Section EXPRS.
 Variable e: env.
 Variable w: world.
 
-Fixpoint sem_cast_arguments (vtl: list (val * type)) (tl: typelist) (m: mem) : option (list val) :=
+Fixpoint sem_cast_arguments (vtl: list (val * type)) (tl: typelist) (m: mem) : option (mem * list val) :=
   match vtl, tl with
-  | nil, Tnil => Some nil
+  | nil, Tnil => Some (m, nil)
   | (v1,t1)::vtl, Tcons t1' tl =>
-      do v <- sem_cast v1 t1 t1' m; do vl <- sem_cast_arguments vtl tl m; Some(v::vl)
+    match (is_ptrtoint_cast t1 t1') with
+    | true =>
+      do _, _, _, m' <- do_ef_realize w (v1::nil) m ;
+      do v <- sem_cast v1 t1 t1' m';
+      do m'', vl <- sem_cast_arguments vtl tl m';
+      Some(m'', (v::vl))
+    | false =>
+      do v <- sem_cast v1 t1 t1' m;
+      do m', vl <- sem_cast_arguments vtl tl m;
+      Some(m', (v::vl))
+    end
   | _, _ => None
   end.
 
@@ -685,7 +699,7 @@ Notation "'do' X , Y , Z <- A ; B" := (match A with Some (X, Y, Z) => B | None =
   : reducts_monad_scope.
 
 Notation "'do' X , Y , Z , W <- A ; B" := (match A with Some (X, Y, Z, W) => B | None => stuck end)
-  (at level 200, X ident, Y ident, Z ident, A at level 100, B at level 200)
+  (at level 200, X ident, Y ident, Z ident, W ident, A at level 100, B at level 200)
   : reducts_monad_scope.
 
 Notation " 'check' A ; B" := (if A then B else stuck)
@@ -817,10 +831,18 @@ Fixpoint step_expr (k: kind) (a: expr) (m: mem): reducts expr :=
   | RV, Eassign l1 r2 ty =>
       match is_loc l1, is_val r2 with
       | Some(b, ofs, ty1), Some(v2, ty2) =>
-          check type_eq ty1 ty;
-          do v <- sem_cast v2 ty2 ty1 m;
-          do w',t,m' <- do_assign_loc w ty1 m b ofs v;
-          topred (Rred "red_assign" (Eval v ty) m' t)
+         check type_eq ty1 ty;
+         match (is_ptrtoint_cast ty2 ty1) with
+         | true =>
+           do _,_,_,m0 <- do_ef_realize w (v2::nil) m;
+           do v <- sem_cast v2 ty2 ty1 m0;
+           do w',t,m' <- do_assign_loc w ty1 m b ofs v;
+           topred (Rred "red_assign" (Eval v ty) m' t)
+         | false =>
+           do v <- sem_cast v2 ty2 ty1 m;
+           do w',t,m' <- do_assign_loc w ty1 m b ofs v;
+           topred (Rred "red_assign" (Eval v ty) m' t)
+         end
       | _, _ =>
          incontext2 (fun x => Eassign x r2 ty) (step_expr LV l1 m)
                     (fun x => Eassign l1 x ty) (step_expr RV r2 m)
@@ -863,8 +885,15 @@ Fixpoint step_expr (k: kind) (a: expr) (m: mem): reducts expr :=
   | RV, Eparen r1 tycast ty =>
       match is_val r1 with
       | Some (v1, ty1) =>
-          do v <- sem_cast v1 ty1 tycast m;
-          topred (Rred "red_paren" (Eval v ty) m E0)
+         match (is_ptrtoint_cast ty1 tycast) with
+         | true =>
+           do _,_,_,m' <- do_ef_realize w (v1::nil) m;
+           do v <- sem_cast v1 ty1 tycast m';
+           topred (Rred "red_paren" (Eval v ty) m E0)
+         | false =>
+           do v <- sem_cast v1 ty1 tycast m;
+           topred (Rred "red_paren" (Eval v ty) m E0)
+         end
       | None =>
           incontext (fun x => Eparen x tycast ty) (step_expr RV r1 m)
       end
@@ -874,9 +903,9 @@ Fixpoint step_expr (k: kind) (a: expr) (m: mem): reducts expr :=
           match classify_fun tyf with
           | fun_case_f tyargs tyres cconv =>
               do fd <- Genv.find_funct ge vf;
-              do vargs <- sem_cast_arguments vtl tyargs m;
+              do m', vargs <- sem_cast_arguments vtl tyargs m;
               check type_eq (type_of_fundef fd) (Tfunction tyargs tyres cconv);
-              topred (Callred "red_call" fd vargs ty m)
+              topred (Callred "red_call" fd vargs ty m')
           | _ => stuck
           end
       | _, _ =>
@@ -886,10 +915,10 @@ Fixpoint step_expr (k: kind) (a: expr) (m: mem): reducts expr :=
   | RV, Ebuiltin ef tyargs rargs ty =>
       match is_val_list rargs with
       | Some vtl =>
-          do vargs <- sem_cast_arguments vtl tyargs m;
-          match do_external ef w vargs m with
+          do m', vargs <- sem_cast_arguments vtl tyargs m;
+          match do_external ef w vargs m' with
           | None => stuck
-          | Some(w',t,v,m') => topred (Rred "red_builtin" (Eval v ty) m' t)
+          | Some(w',t,v,m'') => topred (Rred "red_builtin" (Eval v ty) m'' t)
           end
       | _ =>
           incontext (fun x => Ebuiltin ef tyargs x ty) (step_exprlist rargs m)
@@ -968,7 +997,11 @@ Definition invert_expr_prop (a: expr) (m: mem) : Prop :=
   | Ebinop op (Eval v1 ty1) (Eval v2 ty2) ty =>
       exists v, sem_binary_operation ge op v1 ty1 v2 ty2 m = Some v
   | Ecast (Eval v1 ty1) ty =>
-      exists v, sem_cast v1 ty1 ty m = Some v
+      exists v,
+      match is_ptrtoint_cast ty1 ty with
+      | true => exists m' b ofs, v1 = Vptr b ofs /\ realize_block m b m' /\ sem_cast v1 ty1 ty m' = Some v
+      | false => sem_cast v1 ty1 ty m = Some v
+      end
   | Eseqand (Eval v1 ty1) r2 ty =>
       exists b, bool_val v1 ty1 m = Some b
   | Eseqor (Eval v1 ty1) r2 ty =>
@@ -976,8 +1009,14 @@ Definition invert_expr_prop (a: expr) (m: mem) : Prop :=
   | Econdition (Eval v1 ty1) r1 r2 ty =>
       exists b, bool_val v1 ty1 m = Some b
   | Eassign (Eloc b ofs ty1) (Eval v2 ty2) ty =>
-      exists v, exists m', exists t, exists w',
-      ty = ty1 /\ sem_cast v2 ty2 ty1 m = Some v /\ assign_loc ge ty1 m b ofs v t m' /\ possible_trace w t w'
+      exists v,
+      match is_ptrtoint_cast ty2 ty1 with
+      | true => exists m' t m'' b' ofs' w',
+        v2 = Vptr b' ofs' /\ realize_block m b' m' /\ ty = ty1 /\
+        sem_cast v2 ty2 ty1 m' = Some v /\ assign_loc ge ty1 m' b ofs v t m'' /\ possible_trace w t w'
+      | false => exists m', exists t, exists w',
+        ty = ty1 /\ sem_cast v2 ty2 ty1 m = Some v /\ assign_loc ge ty1 m b ofs v t m' /\ possible_trace w t w'
+      end         
   | Eassignop op (Eloc b ofs ty1) (Eval v2 ty2) tyres ty =>
       exists t, exists v1, exists w',
       ty = ty1 /\ deref_loc ge ty1 m b ofs t v1 /\ possible_trace w t w'
@@ -990,16 +1029,16 @@ Definition invert_expr_prop (a: expr) (m: mem) : Prop :=
       exists v, sem_cast v1 ty1 tycast m = Some v
   | Ecall (Eval vf tyf) rargs ty =>
       exprlist_all_values rargs ->
-      exists tyargs tyres cconv fd vl,
+      exists tyargs tyres cconv fd vl m',
          classify_fun tyf = fun_case_f tyargs tyres cconv
       /\ Genv.find_funct ge vf = Some fd
-      /\ cast_arguments m rargs tyargs vl
+      /\ cast_arguments m' rargs tyargs vl m
       /\ type_of_fundef fd = Tfunction tyargs tyres cconv
   | Ebuiltin ef tyargs rargs ty =>
       exprlist_all_values rargs ->
-      exists vargs t vres m' w',
-         cast_arguments m rargs tyargs vargs
-      /\ external_call ef ge vargs m t vres m'
+      exists vargs t vres m' w' m'',
+         cast_arguments m rargs tyargs vargs m'
+      /\ external_call ef ge vargs m' t vres m''
       /\ possible_trace w t w'
   | _ => True
   end.
@@ -1023,14 +1062,22 @@ Proof.
   exists v; auto.
   exists v; auto.
   exists v; auto.
+  rewrite H0. auto. 
+  rewrite H0. exists v; exists m'; exists b; exists offset; auto.
   exists true; auto. exists false; auto.
   exists true; auto. exists false; auto.
   exists b; auto.
-  exists v; exists m'; exists t; exists w'; auto.
+  destruct (is_ptrtoint_cast ty2 ty1). 
+    destruct H. destruct H. inversion H.
+    destruct H. destruct H3.
+      exists v; exists m'; exists t; exists m''; exists b'; exists ofs'; exists w'. tauto.
+    destruct H. destruct H.
+      exists v; exists m''; exists t; exists w'. rewrite H3 in *. tauto.
+    destruct H. inversion H.
   exists t; exists v1; exists w'; auto.
   exists t; exists v1; exists w'; auto.
   exists v; auto.
-  intros; exists vargs; exists t; exists vres; exists m'; exists w'; auto.
+  intros; exists vargs; exists t; exists vres; exists m'; exists w'; exists m''; auto.
 Qed.
 
 Lemma callred_invert:
@@ -1039,7 +1086,7 @@ Lemma callred_invert:
   invert_expr_prop r m.
 Proof.
   intros. inv H. simpl.
-  intros. exists tyargs, tyres, cconv, fd, args; auto.
+  intros. exists tyargs, tyres, cconv, fd, args, m0. auto.
 Qed.
 
 Scheme context_ind2 := Minimality for context Sort Prop
@@ -1159,20 +1206,24 @@ Ltac monadInv :=
   end.
 
 Lemma sem_cast_arguments_sound:
-  forall m rargs vtl tyargs vargs,
+  forall m rargs vtl tyargs vargs m',
   is_val_list rargs = Some vtl ->
-  sem_cast_arguments vtl tyargs m = Some vargs ->
-  cast_arguments m rargs tyargs vargs.
+  sem_cast_arguments vtl tyargs m = Some (m', vargs) ->
+  cast_arguments m rargs tyargs vargs m'.
+Proof.
+Admitted.
+(*
 Proof.
   induction rargs; simpl; intros.
   inv H. destruct tyargs; simpl in H0; inv H0. constructor.
   monadInv. inv H. simpl in H0. destruct p as [v1 t1]. destruct tyargs; try congruence. monadInv.
   inv H0. rewrite (is_val_inv _ _ _ Heqo). constructor. auto. eauto.
 Qed.
+*)
 
 Lemma sem_cast_arguments_complete:
-  forall m al tyl vl,
-  cast_arguments m al tyl vl ->
+  forall m al tyl vl m',
+  cast_arguments m al tyl vl m' ->
   exists vtl, is_val_list al = Some vtl /\ sem_cast_arguments vtl tyl m = Some vl.
 Proof.
   induction 1.
@@ -1402,6 +1453,8 @@ Proof with (try (apply not_invert_ok; simpl; intro; myinv; intuition congruence;
   eapply incontext2_ok; eauto.
 (* cast *)
   destruct (is_val a) as [[v ty'] | ] eqn:?. rewrite (is_val_inv _ _ _ Heqo).
+  destruct (is_ptrtoint_cast ty' ty) eqn:?.
+  fold (do_ef_realize w (v::nil) m).
   (* top *)
   destruct (sem_cast v ty' ty m) as [v'|] eqn:?...
   apply topred_ok; auto. split. apply red_cast; auto. exists w; constructor.
@@ -1968,6 +2021,13 @@ Definition do_step (w: world) (s: state) : list transition :=
             then ret "step_for_true" (State f s (Kfor3 a2 a3 s k) e m)
             else ret "step_for_false" (State f Sskip k e m)
         | Kreturn k =>
+            do m <-
+             (match (is_ptrtoint_cast ty f.(fn_return)) with
+             | true =>
+               do _,_,_,m' <- do_ef_realize w (v::nil) m;
+               m'
+             | false => m
+             end);
             do v' <- sem_cast v ty f.(fn_return) m;
             do m' <- Mem.free_list m (blocks_of_env ge e);
             ret "step_return_2" (Returnstate v' (call_cont k) m')

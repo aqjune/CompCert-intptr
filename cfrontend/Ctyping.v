@@ -1710,7 +1710,7 @@ Proof.
 - (* condition *) constructor. destruct b; auto. destruct b; auto. red; auto.
 - (* sizeof *)  unfold size_t, Vptrofs; destruct Archi.ptr64; constructor; auto with ty.
 - (* alignof *)  unfold size_t, Vptrofs; destruct Archi.ptr64; constructor; auto with ty.
-- (* assign *) inversion H5. constructor. eapply pres_sem_cast; eauto.
+- (* assign *) inversion H5. constructor. apply pres_sem_cast with (m := m') (v1 := v2) (ty1 := ty2); eauto. inversion H6. assumption.
 - (* assignop *) subst tyres l r. constructor. auto.
   constructor. constructor. eapply wt_deref_loc; eauto.
   auto. auto. auto.

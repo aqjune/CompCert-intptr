@@ -193,12 +193,14 @@ Fixpoint seq_of_labeled_statement (sl: labeled_statements) : statement :=
 
 (** Extract the values from a list of function arguments *)
 
-Inductive cast_arguments (m: mem): exprlist -> typelist -> list val -> Prop :=
+Inductive cast_arguments (m: mem): exprlist -> typelist -> list val -> mem -> Prop :=
   | cast_args_nil:
-      cast_arguments m Enil Tnil nil
-  | cast_args_cons: forall v ty el targ1 targs v1 vl,
-      sem_cast v ty targ1 m = Some v1 -> cast_arguments m el targs vl ->
-      cast_arguments m (Econs (Eval v ty) el) (Tcons targ1 targs) (v1 :: vl).
+      cast_arguments m Enil Tnil nil m
+  | cast_args_cons: forall v ty el targ1 targs v1 vl m' m'' b ofs ,
+      (is_ptrtoint_cast ty targ1 = false /\ m = m') \/
+      (is_ptrtoint_cast ty targ1 = true /\ v = Vptr b ofs /\ realize_block m b m') ->
+      sem_cast v ty targ1 m' = Some v1 -> cast_arguments m' el targs vl m'' ->
+      cast_arguments m (Econs (Eval v ty) el) (Tcons targ1 targs) (v1 :: vl) m''.
 
 (** ** Reduction semantics for expressions *)
 
@@ -292,11 +294,13 @@ Inductive rred: expr -> mem -> trace -> expr -> mem -> Prop :=
   | red_alignof: forall ty1 ty m,
       rred (Ealignof ty1 ty) m
         E0 (Eval (Vptrofs (Ptrofs.repr (alignof ge ty1))) ty) m
-  | red_assign: forall b ofs ty1 v2 ty2 m v t m',
-      sem_cast v2 ty2 ty1 m = Some v ->
-      assign_loc ty1 m b ofs v t m' ->
+  | red_assign: forall b ofs ty1 v2 ty2 b' ofs' m v t m' m'',
+      (is_ptrtoint_cast ty2 ty1 = false /\ m' = m) \/
+      (is_ptrtoint_cast ty2 ty1 = true /\ v2 = Vptr b' ofs' /\ realize_block m b' m') ->
+      sem_cast v2 ty2 ty1 m' = Some v ->
+      assign_loc ty1 m' b ofs v t m'' ->
       rred (Eassign (Eloc b ofs ty1) (Eval v2 ty2) ty1) m
-         t (Eval v ty1) m'
+         t (Eval v ty1) m''
   | red_assignop: forall op b ofs ty1 v2 ty2 tyres m t v1,
       deref_loc ty1 m b ofs t v1 ->
       rred (Eassignop op (Eloc b ofs ty1) (Eval v2 ty2) tyres ty1) m
@@ -320,23 +324,23 @@ Inductive rred: expr -> mem -> trace -> expr -> mem -> Prop :=
       sem_cast v1 ty1 ty2 m = Some v ->
       rred (Eparen (Eval v1 ty1) ty2 ty) m
         E0 (Eval v ty) m
-  | red_builtin: forall ef tyargs el ty m vargs t vres m',
-      cast_arguments m el tyargs vargs ->
-      external_call ef ge vargs m t vres m' ->
+  | red_builtin: forall ef tyargs el ty m vargs t vres m' m'',
+      cast_arguments m el tyargs vargs m' ->
+      external_call ef ge vargs m' t vres m'' ->
       rred (Ebuiltin ef tyargs el ty) m
-         t (Eval vres ty) m'.
+         t (Eval vres ty) m''.
 
 
 (** Head reduction for function calls.
     (More exactly, identification of function calls that can reduce.) *)
 
 Inductive callred: expr -> mem -> fundef -> list val -> type -> Prop :=
-  | red_call: forall vf tyf m tyargs tyres cconv el ty fd vargs,
+  | red_call: forall vf tyf m tyargs tyres cconv el ty fd vargs m',
       Genv.find_funct ge vf = Some fd ->
-      cast_arguments m el tyargs vargs ->
+      cast_arguments m el tyargs vargs m' ->
       type_of_fundef fd = Tfunction tyargs tyres cconv ->
       classify_fun tyf = fun_case_f tyargs tyres cconv ->
-      callred (Ecall (Eval vf tyf) el ty) m
+      callred (Ecall (Eval vf tyf) el ty) m'
               fd vargs ty.
 
 (** Reduction contexts.  In accordance with C's nondeterministic semantics,
